@@ -202,9 +202,9 @@ in [`examples/`](examples/).
 | `s` | server | Server mode |
 | `key` | both | Node private key (hex, from `-genkey`) |
 | `serverkey` | client | Server node public key (hex) — required |
-| `clientkey` / `client_keys` | server | Allowed client public keys (whitelist; empty = any node) |
+| `clientkey` / `client_keys` | server | Allowed client public keys (whitelist; empty = any node) — optional: a matching `password` on both sides is sufficient, the whitelist only adds per-node access control |
 | `peers` | both | Extra Yggdrasil peers, comma-separated (`tls://`, `tcp://`, `quic://`, `ws://`, `wss://`, `socks://`, `sockstls://`; link params `?key=`, `?priority=`, `?sni=`, `?password=`, `?maxbackoff=`) |
-| `password` | both | Yggdrasil group password (shared secret) |
+| `password` | both | Yggdrasil group password (shared secret) — the simplest setup is `key` + `password` on the server and `key` + `serverkey` + `password` on the client, no key whitelists needed |
 | `scheme` | both | Direct link scheme: `tls` (default), `tcp`, `quic`, `ws`, `wss` |
 | `t` / `timeout` | client | Tunnel dial timeout, seconds (default 30) |
 | `loginterval` / `log_interval` | both | Status log interval, seconds (default 30, `0` = off) |
