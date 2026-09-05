@@ -44,7 +44,7 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
         run: |
-          go build -trimpath -ldflags "-s -w" -o "yggss-${{ matrix.suffix }}${{ matrix.ext }}" .
+          go build -trimpath -ldflags "-s -w -X main.version=${{ github.event.release.tag_name }}" -o "yggss-${{ matrix.suffix }}${{ matrix.ext }}" .
 
       - name: Upload to release
         env:

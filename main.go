@@ -27,7 +27,10 @@ import (
 	"github.com/yggdrasil-network/yggdrasil-go/src/address"
 )
 
-const version = "0.1.0"
+// version is the fallback version. Release builds override it via
+// -ldflags "-X main.version=<tag>" (see .github/workflows/release.yml),
+// so the binary always reports the tag it was built from.
+var version = "v0.0.0-dev"
 
 func main() {
 	var (
