@@ -1,0 +1,19 @@
+{
+	"server": false,
+	"_comment": "bind/destination нужны только для автономного запуска (yggss -c). Под shadowsocks адреса приходят из окружения SS_LOCAL_*/SS_REMOTE_* и эти поля игнорируются.",
+	"bind": "127.0.0.1:1080",
+	"destination": "<IP_СЕРВЕРА>:4440",
+	"key": "ВСТАВЬТЕ_СЮДА_ПРИВАТНЫЙ_КЛЮЧ_КЛИЕНТА_ИЗ_GENKEY",
+	"server_key": "ВСТАВЬТЕ_СЮДА_ПУБЛИЧНЫЙ_КЛЮЧ_СЕРВЕРА",
+	"password": "общий_секрет_группы",
+	"scheme": "tls",
+	"mode": "direct",
+	"timeout": 30,
+	"log_interval": 30,
+	"failover": true,
+	"failover_latency_ms": 1000,
+	"failover_check_sec": 5,
+	"peers": [
+		"tls://<IP_СЕРВЕРА>:4440"
+	]
+}

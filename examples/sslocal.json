@@ -1,0 +1,12 @@
+{
+	"server": "<IP_СЕРВЕРА>",
+	"server_port": 4440,
+	"local_address": "127.0.0.1",
+	"local_port": 1080,
+	"password": "пароль_shadowsocks",
+	"method": "2022-blake3-aes-128-gcm",
+	"timeout": 300,
+	"plugin": "/usr/local/bin/yggss",
+	"plugin_opts": "/etc/shadowsocks/yggss-client.json",
+	"plugin_mode": "tcp_and_udp"
+}

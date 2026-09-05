@@ -1,0 +1,7 @@
+# Build artifacts (download them from Releases instead)
+yggss
+yggss.exe
+yggss-linux-*
+yggss-windows-*
+*.test
+*.out

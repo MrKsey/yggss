@@ -1,0 +1,24 @@
+[Unit]
+Description=yggss - shadowsocks SIP003 plugin over Yggdrasil (server)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/yggss -c /etc/shadowsocks/yggss-server.json
+Restart=on-failure
+RestartSec=5
+
+# The plugin needs no privileges: it only opens ordinary TCP/UDP sockets.
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+# ReadPrivate is required to read the JSON config with the node key.
+ReadOnlyPaths=/etc/shadowsocks
+
+[Install]
+WantedBy=multi-user.target

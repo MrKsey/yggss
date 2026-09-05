@@ -1,0 +1,10 @@
+{
+	"server": "127.0.0.1:8388",
+	"server_port": 8388,
+	"password": "пароль_shadowsocks",
+	"method": "2022-blake3-aes-128-gcm",
+	"timeout": 300,
+	"plugin": "/usr/local/bin/yggss",
+	"plugin_opts": "/etc/shadowsocks/yggss-server.json",
+	"plugin_mode": "tcp_and_udp"
+}
