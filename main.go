@@ -87,6 +87,12 @@ func main() {
 	logger.EnableLevel("warn")
 	logger.EnableLevel("error")
 
+	if showVersion {
+		// Print the bare version only - no logger prefix, no startup noise.
+		fmt.Println(version)
+		return
+	}
+
 	// quic-go warns when it cannot raise the kernel UDP buffer of the
 	// socket it was handed. The mesh tunnel runs QUIC on top of the
 	// yggdrasil virtual PacketConn, which has no kernel socket at all -
@@ -98,11 +104,6 @@ func main() {
 	}
 
 	logger.Infof("yggss %s", version)
-
-	if showVersion {
-		fmt.Println(version)
-		return
-	}
 	if genKey {
 		genAndPrintKey()
 		return
