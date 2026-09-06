@@ -70,7 +70,6 @@ that, the *direct* tunnel mode mimics a browser:
   streams upgrade to QUIC; when it fails, they instantly fall back to mesh.
 
 ```
-```
 tunnel: h3 path verified in 95ms (probe rtt) - new streams upgrade to QUIC
 tunnel: h3 probe round trip failed (context deadline exceeded) - 1 of 2 before downgrading
 tunnel: h3 path failed (2 consecutive probe errors: ...) - downgrading to h2, existing streams reconnect via mesh
@@ -105,7 +104,6 @@ mode: direct
 | `tunnel: idle, h3 cache dropped - will re-verify on next activity` | no traffic for a long time; the probe pauses and re-verifies on the next burst |
 | `tunnel path: ... - active: direct QUIC` / `active: mesh` | what carries traffic right now (periodic status log) |
 | `server identity verified: peered node key matches server_key` | the mesh peering with the server is up and its key matches the config |
-```
 
 ## Tunnel modes
 
