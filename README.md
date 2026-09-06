@@ -109,17 +109,37 @@ mode: direct
 
 ## Tunnel modes
 
+The `mode` option chooses what carries the tunnel streams between the client
+and the server plugin:
+
+- **`direct`** is essentially **QUIC over plain UDP, bypassing Yggdrasil
+  entirely**. The client dials the server's UDP endpoint directly; packets
+  travel exactly like a browser's HTTP/3 traffic — one QUIC handshake,
+  TLS 1.3 inside QUIC, no mesh routing, no extra encapsulation. The Yggdrasil
+  node identity is still used for authentication (the QUIC TLS certificates
+  are the nodes' ed25519 keys), but the *transport* has nothing to do with
+  the Yggdrasil network: no spanning tree, no transit peers, no session
+  layer. This is why it is fast: one crypto layer instead of three and no
+  routing overhead.
+- **`mesh`** runs QUIC on top of the real Yggdrasil end-to-end session. The
+  client dials the server's *public key*, and Yggdrasil routes the packets
+  — directly over the TCP/TLS link when possible, otherwise through mesh
+  peers. This adds two more crypto layers (link TLS + the end-to-end
+  session) and routing hops, but works even when the server has no reachable
+  UDP endpoint, and the route can pass through public peers.
+
 | | `mesh` (default) | `direct` |
 |---|---|---|
-| Data path | QUIC -> Yggdrasil session -> link | QUIC over plain UDP |
-| Crypto layers | 3 (link TLS + session + QUIC) | 2 (link TLS + QUIC) |
+| Transport | QUIC over the Yggdrasil session | QUIC over plain UDP (no Yggdrasil in the data path) |
+| Addressing | server's public key, routed by the mesh | server's IP:port, dialed directly |
+| Crypto layers | 3 (link TLS + session + QUIC) | 1 (QUIC's built-in TLS 1.3) |
 | Typical speed | lower (see below) | 2-3x higher |
 | Works through mesh peers | yes | no (needs direct UDP reachability) |
 | Automatic fallback to mesh | — | yes, Alt-Svc style |
 
 In `direct` mode the server listens with QUIC/UDP on the same port as the
-TLS link (TCP and UDP are independent). Encryption and authentication are
-unchanged.
+TLS link (TCP and UDP are independent). Authentication is unchanged: the
+same node keys are checked inside the QUIC handshake.
 
 ## Why mesh speed can be low
 
