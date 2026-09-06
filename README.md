@@ -70,10 +70,41 @@ that, the *direct* tunnel mode mimics a browser:
   streams upgrade to QUIC; when it fails, they instantly fall back to mesh.
 
 ```
-tunnel: h3 path verified in 95ms - new streams upgrade to QUIC
-tunnel: h3 path failed (...) - downgrading to h2, background probing continues
-tunnel path: h2+h3 (direct verified)
-tunnel path: h2 (h3 failed, probing)
+```
+tunnel: h3 path verified in 95ms (probe rtt) - new streams upgrade to QUIC
+tunnel: h3 probe round trip failed (context deadline exceeded) - 1 of 2 before downgrading
+tunnel: h3 path failed (2 consecutive probe errors: ...) - downgrading to h2, existing streams reconnect via mesh
+tunnel path: h2+h3 (direct verified) - active: direct QUIC
+tunnel path: h2 (h3 failed, probing) - active: mesh
+```
+
+### Startup summary
+
+The first log lines always show the version and the four parameters that
+define the plugin's role, so a running instance can be identified from the
+log alone:
+
+```
+yggss v1.2.0
+bind: [::1]:40729
+destination: [2001:db8::1]:443
+scheme: tls
+mode: direct
+```
+
+### What the log tells you
+
+| Log line | Meaning |
+|---|---|
+| `tunnel: h3 path verified in <rtt> - new streams upgrade to QUIC` | the direct path passed a real round-trip probe; new connections go over direct QUIC |
+| `tunnel: h3 probe error on a living connection (...) - 1 of 2 before downgrading` | a probe hiccup (e.g. one lost packet); not critical, QUIC retransmits |
+| `tunnel: h3 probe round trip failed (...) - 1 of 2 before downgrading` | the path stopped carrying data (black hole); one more failure and the channel switches |
+| `tunnel: h3 path failed (...) - downgrading to h2, existing streams reconnect via mesh` | the direct channel is dropped: new streams go over mesh, streams on the dead connection error out immediately so their applications reconnect |
+| `tunnel: h3 probe rtt ... exceeds the degradation threshold` | packet loss is growing (RTT spike against the path baseline); the path yields to mesh |
+| `tunnel: h3 verify cache expired - probing the path again` | the verified cache TTL ran out; the path is re-checked before upgrades resume |
+| `tunnel: idle, h3 cache dropped - will re-verify on next activity` | no traffic for a long time; the probe pauses and re-verifies on the next burst |
+| `tunnel path: ... - active: direct QUIC` / `active: mesh` | what carries traffic right now (periodic status log) |
+| `server identity verified: peered node key matches server_key` | the mesh peering with the server is up and its key matches the config |
 ```
 
 ## Tunnel modes
@@ -122,10 +153,14 @@ mesh as the automatic fallback (it is always hot — failover is instant).
 The client watches the direct path continuously and switches channels on
 degradation, not on death:
 
-- the background probe measures round-trip time; a sharp rise against the
-  path's own baseline (or two consecutive probe errors) means packet loss is
-  growing — the direct connection is closed immediately, so the streams
-  riding it error out at once and their applications reconnect over mesh;
+- the background probe sends a real round-trip request (the server echoes
+  it back); a path that swallows packets (NAT rebinding, a firewall starting
+  to drop UDP) fails the probe within 3 seconds even though the QUIC
+  connection formally stays "open" — the direct connection is closed
+  immediately, so the streams riding it error out at once and their
+  applications reconnect over mesh;
+- a sharp RTT rise against the path's own baseline (or two consecutive probe
+  errors) is treated as growing packet loss and switches the same way;
 - when the direct connection closes (peer restart, network change), the
   cutover happens the same instant instead of waiting for QUIC timeouts;
 - while degraded, the probe re-checks every few seconds; as soon as probes
@@ -278,5 +313,13 @@ listeners even if they discover them.
 go test ./...
 ```
 
-The integration test spins up echo servers, both nodes, peers them and pushes
-data through the tunnel.
+- Unit and state-machine tests cover the channel-selection logic (lifecycle,
+  degradation/recovery, fail-fast behavior) with injectable fake QUIC
+  connections.
+- `TestLiveCutover` is a fault-injection scenario: real QUIC over UDP through
+  a breakable proxy plus a real Yggdrasil mesh peering. It walks the full
+  break/heal matrix — direct works, UDP blackout (cutover to mesh), UDP heals
+  (upgrade back), both channels break (streams fail fast), both heal (traffic
+  resumes without a restart).
+- Direct-mode tests automatically fall back to a LAN interface when loopback
+  UDP is filtered (common on workstations with strict firewalls).

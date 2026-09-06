@@ -684,6 +684,7 @@ func (d *directClient) startProber(client *client) {
 			// expired between probes while the path is actually dead.
 			if !wasVerified && client.PathState() == pathH2H3 {
 				client.setProbeState(pathMeshProbing)
+				d.log.Infoln("tunnel: h3 verify cache expired - probing the path again before upgrades resume")
 			}
 			start := time.Now()
 			stream, err := d.openStream()
@@ -698,7 +699,11 @@ func (d *directClient) startProber(client *client) {
 					// packet loss is growing and the path must yield to
 					// mesh.
 					failStreak++
-					if wasVerified && failStreak >= probeFailStreakLimit {
+					if failStreak == 1 {
+						d.log.Warnf("tunnel: h3 probe error on a living connection (%v) - %d of %d before downgrading",
+							err, probeFailStreakLimit-failStreak, probeFailStreakLimit)
+					}
+					if failStreak >= probeFailStreakLimit {
 						d.dropAndFail(fmt.Sprintf("%d consecutive probe errors: %v", failStreak, err))
 					}
 					continue
@@ -706,6 +711,7 @@ func (d *directClient) startProber(client *client) {
 				// The connection is gone: fast cutover to mesh (dropAndFail
 				// also kills any streams still riding the dead connection,
 				// so their applications reconnect over mesh right away).
+				d.log.Warnln("tunnel: h3 connection is gone - switching to mesh, existing streams reconnect via mesh")
 				d.dropAndFail("")
 				failStreak = 0
 				unverifiedC = unverifiedTicker.C
@@ -743,10 +749,15 @@ func (d *directClient) startProber(client *client) {
 				// too - the next dial starts fresh.
 				if d.connAlive() {
 					failStreak++
+					if failStreak == 1 {
+						d.log.Warnf("tunnel: h3 probe round trip failed (%v) - %d of %d before downgrading",
+							err, probeFailStreakLimit-failStreak, probeFailStreakLimit)
+					}
 					if failStreak >= probeFailStreakLimit {
 						d.dropAndFail(fmt.Sprintf("probe round trip failed: %v", err))
 					}
 				} else {
+					d.log.Warnln("tunnel: h3 connection is gone - switching to mesh, existing streams reconnect via mesh")
 					d.dropAndFail("")
 					failStreak = 0
 					unverifiedC = unverifiedTicker.C
@@ -763,13 +774,16 @@ func (d *directClient) startProber(client *client) {
 				// path is upgraded back as soon as probes come clean.
 				if wasVerified {
 					d.dropAndFail(fmt.Sprintf("probe rtt %s exceeds degradation threshold", elapsed.Truncate(time.Millisecond)))
+				} else {
+					d.log.Warnf("tunnel: h3 probe rtt %s exceeds the degradation threshold - keeping the path unverified, mesh serves traffic",
+						elapsed.Truncate(time.Millisecond))
 				}
 				continue
 			}
 			d.MarkVerified(d.verifyTTL())
 			client.setProbeState(pathH2H3)
 			if !wasVerified {
-				d.log.Infof("tunnel: h3 path verified in %s - new streams upgrade to QUIC",
+				d.log.Infof("tunnel: h3 path verified in %s (probe rtt) - new streams upgrade to QUIC",
 					elapsed.Truncate(time.Millisecond))
 			}
 			if timerC != nil { // stop the one-shot startup timer

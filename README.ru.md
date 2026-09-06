@@ -73,10 +73,40 @@ yggdrasil:
   провалилась — мгновенный откат на mesh.
 
 ```
-tunnel: h3 path verified in 95ms - new streams upgrade to QUIC
-tunnel: h3 path failed (...) - downgrading to h2, background probing continues
-tunnel path: h2+h3 (direct verified)
-tunnel path: h2 (h3 failed, probing)
+```
+tunnel: h3 path verified in 95ms (probe rtt) - new streams upgrade to QUIC
+tunnel: h3 probe round trip failed (context deadline exceeded) - 1 of 2 before downgrading
+tunnel: h3 path failed (2 consecutive probe errors: ...) - downgrading to h2, existing streams reconnect via mesh
+tunnel path: h2+h3 (direct verified) - active: direct QUIC
+tunnel path: h2 (h3 failed, probing) - active: mesh
+```
+
+### Стартовая сводка
+
+Первые строки лога всегда показывают версию и четыре параметра, определяющие
+роль плагина — работающий экземпляр можно опознать по одному логу:
+
+```
+yggss v1.2.0
+bind: [::1]:40729
+destination: [2001:db8::1]:443
+scheme: tls
+mode: direct
+```
+
+### Что означает лог
+
+| Строка лога | Значение |
+|---|---|
+| `tunnel: h3 path verified in <rtt> - new streams upgrade to QUIC` | direct-путь прошёл реальную round-trip пробу; новые соединения идут по direct QUIC |
+| `tunnel: h3 probe error on a living connection (...) - 1 of 2 before downgrading` | сбой пробы (например, один потерянный пакет); не критично, QUIC ретранслирует |
+| `tunnel: h3 probe round trip failed (...) - 1 of 2 before downgrading` | путь перестал пропускать данные (чёрная дыра); ещё один сбой — и канал переключится |
+| `tunnel: h3 path failed (...) - downgrading to h2, existing streams reconnect via mesh` | direct-канал сброшен: новые стримы идут по mesh, стримы на умершем соединении мгновенно получают ошибку, и их приложения переподключаются |
+| `tunnel: h3 probe rtt ... exceeds the degradation threshold` | растут потери (всплеск RTT относительно базлайна пути); путь уступает mesh |
+| `tunnel: h3 verify cache expired - probing the path again` | истёк TTL verified-кэша; путь перепроверяется до возобновления апгрейдов |
+| `tunnel: idle, h3 cache dropped - will re-verify on next activity` | долго не было трафика; проба приостановлена и перепроверит путь при следующей активности |
+| `tunnel path: ... - active: direct QUIC` / `active: mesh` | что несёт трафик прямо сейчас (периодический статус-лог) |
+| `server identity verified: peered node key matches server_key` | mesh-peering с сервером поднят, его ключ совпадает с конфигом |
 ```
 
 ## Режимы туннеля
@@ -126,10 +156,13 @@ Yggdrasil:
 Клиент непрерывно следит за direct-путём и переключает каналы по признакам
 деградации, а не по факту смерти:
 
-- фоновая проба измеряет round-trip time; резкий рост относительно
-  собственного базлайна пути (или две ошибки подряд) означает рост потерь —
-  direct-соединение закрывается немедленно, стримы на нём мгновенно получают
-  ошибку, и их приложения переподключаются уже по mesh;
+- фоновая проба посылает реальный round-trip запрос (сервер возвращает эхо);
+  путь, глотающий пакеты (смена NAT-маппинга, firewall начавший резать UDP),
+  проваливает пробу за 3 секунды, даже если QUIC-соединение формально
+  «открыто» — direct-соединение закрывается немедленно, стримы на нём
+  мгновенно получают ошибку, и их приложения переподключаются уже по mesh;
+- резкий рост RTT относительно собственного базлайна пути (или две ошибки
+  подряд) трактуется как рост потерь и переключает так же;
 - при закрытии direct-соединения (рестарт сервера, смена сети) переключение
   происходит в тот же момент, а не по таймаутам QUIC;
 - в деградировавшем состоянии проба повторяется каждые несколько секунд;
@@ -286,5 +319,15 @@ yggdrasil address:  200:7235:ff73:d8a4:a4af:224a:7649:c0d4
 go test ./...
 ```
 
-Интеграционный тест поднимает echo-серверы, оба узла, устанавливает пиір'инг
-и гонит данные сквозь туннель.
+- Юнит-тесты и тесты state-machine покрывают логику выбора каналов
+  (жизненный цикл, деградация/восстановление, fail-fast) на подменных
+  QUIC-соединениях.
+- `TestLiveCutover` — fault-injection сценарий: реальный QUIC поверх UDP через
+  управляемый прокси-«обрыв» плюс настоящий yggdrasil mesh-peering. Прогоняет
+  полную матрицу отказов/восстановлений — direct работает, чёрная дыра UDP
+  (переключение на mesh), UDP восстановился (апгрейд обратно), сломаны оба
+  канала (стримы фейлятся быстро), восстановились оба (трафик пошёл без
+  перезапуска клиента).
+- Тесты direct-режима автоматически используют LAN-интерфейс, если loopback
+  UDP отфильтрован (частая ситуация на рабочих станциях со строгими
+  firewall'ами).

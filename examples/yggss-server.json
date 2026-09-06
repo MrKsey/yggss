@@ -13,5 +13,6 @@
 	"scheme": "tls",
 	"mode": "direct",
 	"log_interval": 30,
+	"_comment3": "в режиме direct сервер слушает QUIC/UDP на том же порту, что и TLS-линк; пробные round-trip запросы клиента (сигнатура 0x59 0x21) сервер отвечает эхом и не передаёт на ss-server",
 	"peers": []
 }
