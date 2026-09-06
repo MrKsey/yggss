@@ -39,6 +39,14 @@ import (
 //     channel (browser fallback), and the prober keeps re-testing in the
 //     background. UDP never exists without a live TCP session alongside.
 
+// quicConn is the subset of *quic.Conn used by the tunnel code. Keeping the
+// field as an interface lets tests inject a controllable fake connection.
+type quicConn interface {
+	Context() context.Context
+	OpenStreamSync(ctx context.Context) (*quic.Stream, error)
+	CloseWithError(code quic.ApplicationErrorCode, reason string) error
+}
+
 // directFallbackCooldown is the default interval between direct-path
 // re-verification probes, used when direct_retry_sec is not configured.
 const directFallbackCooldown = 30 * time.Second
@@ -297,7 +305,7 @@ type directClient struct {
 
 	mu    sync.Mutex
 	tr    *quic.Transport // transport owning qconn; closed together with it
-	qconn *quic.Conn
+	qconn quicConn        // interface: real *quic.Conn in production, fake in tests
 
 	// failUntil is a short cooldown after a failed dial or a dead
 	// connection: openStream calls arriving during it fail immediately
@@ -528,6 +536,13 @@ func (d *directClient) openStream() (*quic.Stream, error) {
 	if time.Now().Before(d.failUntil) {
 		d.mu.Unlock()
 		return nil, errDirectCooldown
+	}
+	if d.node == nil {
+		// Test-only configuration: no node, so dialing is impossible.
+		// Behave like a failed dial: cool the path down and fail fast.
+		d.failUntil = time.Now().Add(directFailCooldown)
+		d.mu.Unlock()
+		return nil, errors.New("direct: no node configured (test)")
 	}
 	if !d.connAliveLocked() {
 		d.dropConnLocked()

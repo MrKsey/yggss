@@ -292,7 +292,7 @@ type client struct {
 	lastActive atomic.Int64 // unix nanoseconds
 	mu         sync.Mutex
 	tr         *quic.Transport
-	qconn      *quic.Conn
+	qconn      quicConn // interface: real *quic.Conn in production, fake in tests
 }
 
 // touchActivity records tunnel activity (called on every new stream).
@@ -401,7 +401,7 @@ func (c *client) openStream() (*quic.Stream, error) {
 		}
 	}
 	if c.qconn != nil {
-		stream, err := c.openStreamOn(c.qconn)
+		stream, err := openStreamOn(c.qconn)
 		if err == nil {
 			return stream, nil
 		}
@@ -419,6 +419,11 @@ func (c *client) openStream() (*quic.Stream, error) {
 	if dialTimeout > 10*time.Second {
 		dialTimeout = 10 * time.Second
 	}
+	if c.tr == nil || c.node == nil {
+		// Test-only configuration without a mesh transport: fail fast so
+		// callers fall through to error handling instead of hanging.
+		return nil, errors.New("mesh: no transport configured (test)")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), dialTimeout)
 	defer cancel()
 	qconn, err := c.tr.Dial(ctx, types.Addr(c.serverKey), c.tlsConfig(), quicConfig())
@@ -426,7 +431,7 @@ func (c *client) openStream() (*quic.Stream, error) {
 		return nil, fmt.Errorf(
 			"failed to dial server over yggdrasil: %w (check that server_key is the server node's PUBLIC key hex from -genkey, not its yggdrasil address, and that the group password is identical on both sides)", err)
 	}
-	stream, err := c.openStreamOn(qconn)
+	stream, err := openStreamOn(qconn)
 	if err != nil {
 		_ = qconn.CloseWithError(0, "")
 		return nil, err
@@ -441,7 +446,7 @@ func (c *client) openStream() (*quic.Stream, error) {
 // watchMeshConn drops the cached mesh connection as soon as it closes,
 // keeping openStream's fast path accurate after peer restarts and link
 // flaps.
-func (c *client) watchMeshConn(qconn *quic.Conn) {
+func (c *client) watchMeshConn(qconn quicConn) {
 	<-qconn.Context().Done()
 	c.mu.Lock()
 	if c.qconn == qconn {
@@ -450,7 +455,8 @@ func (c *client) watchMeshConn(qconn *quic.Conn) {
 	c.mu.Unlock()
 }
 
-func (c *client) openStreamOn(qconn *quic.Conn) (*quic.Stream, error) {
+// openStreamOn opens a stream on the given connection with a bounded wait.
+func openStreamOn(qconn quicConn) (*quic.Stream, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	return qconn.OpenStreamSync(ctx)
