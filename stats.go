@@ -98,7 +98,15 @@ func (s *statusLogger) report() {
 	// tunnel channel (h3/QUIC vs h2/mesh) is reported first, in browser
 	// Alt-Svc terms.
 	if s.tunnelPath != nil {
-		s.logger.Infoln("tunnel path:", s.tunnelPath())
+		// Spell the active channel out in plain words: the Alt-Svc notation
+		// ("h2+h3") is compact but does not literally say what carries
+		// traffic right now.
+		state := s.tunnelPath()
+		active := "mesh"
+		if strings.HasPrefix(state, "h2+h3") {
+			active = "direct QUIC"
+		}
+		s.logger.Infof("tunnel path: %s - active: %s", state, active)
 	}
 	if s.n.IsPeerOf(s.serverKey) {
 		var uri string

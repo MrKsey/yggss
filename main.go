@@ -87,6 +87,8 @@ func main() {
 	logger.EnableLevel("warn")
 	logger.EnableLevel("error")
 
+	logger.Infof("yggss %s", version)
+
 	if showVersion {
 		fmt.Println(version)
 		return
