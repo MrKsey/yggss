@@ -71,7 +71,7 @@ func main() {
 	fs.StringVar(&mode, "mode", "mesh", "tunnel transport: mesh (via yggdrasil session) or direct (plain UDP, faster)")
 	fs.StringVar(&sni, "sni", "", "fake SNI domain for the direct TLS link to the server (client only)")
 	fs.IntVar(&directDialSec, "directdialtimeout", 5, "direct UDP dial timeout in seconds (client only)")
-	fs.IntVar(&directRetrySec, "directretry", 30, "interval between direct tunnel retries in seconds (client only)")
+	fs.IntVar(&directRetrySec, "directretry", 10, "interval between direct tunnel re-checks in seconds (client only)")
 	fs.IntVar(&timeoutSec, "t", 30, "tunnel dial timeout in seconds")
 	fs.StringVar(&configPath, "c", "", "path to a JSON config file (see examples/)")
 	fs.IntVar(&logIntervalSec, "loginterval", 30, "status log interval in seconds (0 = disabled)")

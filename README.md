@@ -117,6 +117,22 @@ Mesh throughput is limited by design trade-offs of Yggdrasil itself:
 **Recommendation**: use `direct` mode when the server has open UDP; keep the
 mesh as the automatic fallback (it is always hot — failover is instant).
 
+### Fast cutover on direct-path degradation
+
+The client watches the direct path continuously and switches channels on
+degradation, not on death:
+
+- the background probe measures round-trip time; a sharp rise against the
+  path's own baseline (or two consecutive probe errors) means packet loss is
+  growing — the direct connection is closed immediately, so the streams
+  riding it error out at once and their applications reconnect over mesh;
+- when the direct connection closes (peer restart, network change), the
+  cutover happens the same instant instead of waiting for QUIC timeouts;
+- while degraded, the probe re-checks every few seconds; as soon as probes
+  come back clean, new streams upgrade to QUIC again.
+
+A single lost packet never triggers a switch — QUIC retransmits transparently.
+
 ## Getting started
 
 ### 1. Generate node keys
@@ -214,7 +230,7 @@ in [`examples/`](examples/).
 | `mode` | both | `mesh` (default) or `direct` |
 | `sni` | client | Fake domain for the direct link ClientHello |
 | `direct_dial_timeout_sec` | client | Direct UDP dial timeout (default 5) |
-| `direct_retry_sec` | client | Direct path re-verification interval (default 30) |
+| `direct_retry_sec` | client | Direct path re-verification interval (default 10) |
 
 The same options are available as CLI flags (`-s`, `-key`, `-serverkey`,
 `-clientkey`, `-peers`, `-password`, `-scheme`, `-t`, `-b`, `-d`, `-sni`,

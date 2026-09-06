@@ -366,7 +366,17 @@ func (c *client) openStream() (*quic.Stream, error) {
 		c.qconn = nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), c.timeout)
+	// Cap the mesh dial wait: the tunnel timeout (default 30s) is meant for
+	// the very first connection; when an established mesh connection dies,
+	// making every queued caller wait that long under the lock turns a mesh
+	// hiccup into a 30s stall. A yggdrasil session re-establishes within a
+	// few seconds once the peering is up; beyond 10s the mesh is down and
+	// callers should fail fast and retry.
+	dialTimeout := c.timeout
+	if dialTimeout > 10*time.Second {
+		dialTimeout = 10 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), dialTimeout)
 	defer cancel()
 	qconn, err := c.tr.Dial(ctx, types.Addr(c.serverKey), c.tlsConfig(), quicConfig())
 	if err != nil {
@@ -379,7 +389,22 @@ func (c *client) openStream() (*quic.Stream, error) {
 		return nil, err
 	}
 	c.qconn = qconn
+	// Clear the cached connection as soon as it closes, so the half-dead
+	// check above never has to discover it the slow way.
+	go c.watchMeshConn(qconn)
 	return stream, nil
+}
+
+// watchMeshConn drops the cached mesh connection as soon as it closes,
+// keeping openStream's fast path accurate after peer restarts and link
+// flaps.
+func (c *client) watchMeshConn(qconn *quic.Conn) {
+	<-qconn.Context().Done()
+	c.mu.Lock()
+	if c.qconn == qconn {
+		c.qconn = nil
+	}
+	c.mu.Unlock()
 }
 
 func (c *client) openStreamOn(qconn *quic.Conn) (*quic.Stream, error) {

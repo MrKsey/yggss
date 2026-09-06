@@ -288,6 +288,19 @@ type directClient struct {
 	tr    *quic.Transport // transport owning qconn; closed together with it
 	qconn *quic.Conn
 
+	// failUntil is a short cooldown after a failed dial or a dead
+	// connection: openStream calls arriving during it fail immediately
+	// instead of stampeding into serialized 5s dials.
+	failUntil time.Time
+
+	// owner is the client this directClient serves (set by startProber);
+	// used to update the Alt-Svc status state on asynchronous events.
+	owner *client
+
+	// probeRTT is the EWMA of successful probe round-trip times; a sharp
+	// rise above the derived threshold means the path degrades.
+	probeRTT time.Duration
+
 	verifyMu      sync.Mutex
 	verifiedUntil time.Time
 
@@ -330,6 +343,22 @@ func (d *directClient) verifyTTL() time.Duration {
 // probeIntervalWhileUnverified is how often the prober retries while the
 // direct path is not yet (or no longer) verified.
 const probeIntervalWhileUnverified = 5 * time.Second
+
+// directFailCooldown is how long openStream refuses to dial after a failed
+// dial or a dead connection: instead of every caller serially paying the
+// full dial timeout, the first failure cools the path down and the rest
+// fall through to mesh instantly.
+const directFailCooldown = 2 * time.Second
+
+// probeFailStreakLimit is the number of consecutive failed probes on a
+// living connection before the path is declared degraded. A single lost
+// probe packet is not critical (QUIC retransmits); a streak means real
+// loss growth.
+const probeFailStreakLimit = 2
+
+// errDirectCooldown is returned by openStream while the path is cooling
+// down after a failure; callers fall through to mesh on it.
+var errDirectCooldown = errors.New("direct path cooling down after failure")
 
 // directPathState describes the current channel selection for status logs.
 type directPathState int
@@ -403,6 +432,74 @@ func (d *directClient) dropConnLocked() {
 	d.tr = nil
 }
 
+// dropAndFail kills the current connection (if any) and clears the Alt-Svc
+// cache: new streams go to mesh, existing streams on the killed connection
+// error out immediately so their applications reconnect - over mesh, since
+// the direct path is now unverified. This is the fast-switch primitive:
+// it turns "direct path went bad" into an instant, visible cutover instead
+// of waiting for QUIC's own timeouts.
+func (d *directClient) dropAndFail(reason string) {
+	d.mu.Lock()
+	d.dropConnLocked()
+	d.failUntil = time.Now().Add(directFailCooldown)
+	d.mu.Unlock()
+	d.MarkFailed()
+	if d.owner != nil {
+		d.owner.setProbeState(pathMeshFallback)
+	}
+	if reason != "" {
+		d.log.Warnf("tunnel: h3 path failed (%s) - downgrading to h2, existing streams reconnect via mesh", reason)
+	}
+}
+
+// watchConn waits for the connection to close (by the peer, by us, or by
+// QUIC's own timeout) and, if it is still the current connection, performs
+// the fast cutover: drop + MarkFailed + cooldown. Without it, streams on a
+// silently dead connection would hang until QUIC's idle timeout (up to two
+// minutes) instead of reconnecting over mesh right away.
+func (d *directClient) watchConn(qconn *quic.Conn) {
+	<-qconn.Context().Done()
+	d.mu.Lock()
+	current := d.qconn == qconn
+	if current {
+		d.dropConnLocked()
+		d.failUntil = time.Now().Add(directFailCooldown)
+	}
+	d.mu.Unlock()
+	if current {
+		d.MarkFailed()
+		if d.owner != nil {
+			d.owner.setProbeState(pathMeshFallback)
+		}
+		d.log.Warnln("tunnel: h3 connection closed - downgrading to h2, streams reconnect via mesh")
+	}
+}
+
+// probeHealthy records a probe RTT and reports whether the path looks
+// healthy. The first successful probe establishes the baseline; afterwards
+// a sharp rise (more than 3x the EWMA, at least 1s) means packet loss is
+// growing - the retransmission-driven delay is exactly what a loss spike
+// looks like from the outside.
+func (d *directClient) probeHealthy(rtt time.Duration) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.probeRTT <= 0 {
+		d.probeRTT = rtt
+		return true
+	}
+	threshold := 3 * d.probeRTT
+	if threshold < time.Second {
+		threshold = time.Second
+	}
+	if rtt > threshold {
+		return false
+	}
+	// EWMA update only on healthy probes: a degraded sample must not
+	// drag the baseline up and hide further degradation.
+	d.probeRTT = time.Duration(0.7*float64(d.probeRTT) + 0.3*float64(rtt))
+	return true
+}
+
 // openStream returns a QUIC stream to the server, reusing the existing
 // connection when possible and redialing otherwise. Dials are serialised:
 // a caller that finds a dead connection dials under the lock, so only one
@@ -417,6 +514,10 @@ func (d *directClient) dropConnLocked() {
 // down every healthy stream multiplexed on it.
 func (d *directClient) openStream() (*quic.Stream, error) {
 	d.mu.Lock()
+	if time.Now().Before(d.failUntil) {
+		d.mu.Unlock()
+		return nil, errDirectCooldown
+	}
 	if !d.connAliveLocked() {
 		d.dropConnLocked()
 	} else {
@@ -442,12 +543,24 @@ func (d *directClient) openStream() (*quic.Stream, error) {
 	// connection instead of racing and killing each other's streams.
 	qconn, tr, err := directDialTransport(d.node, d.serverKey, d.serverAddr, d.timeout, d.fakeSNI)
 	if err != nil {
+		// Dial failed: cool the path down so the callers already waiting
+		// on the lock fall through to mesh instead of re-dialing one by
+		// one, each for the full dial timeout.
+		d.failUntil = time.Now().Add(directFailCooldown)
 		d.mu.Unlock()
+		d.MarkFailed()
+		if d.owner != nil {
+			d.owner.setProbeState(pathMeshFallback)
+		}
 		return nil, err
 	}
 	d.qconn = qconn
 	d.tr = tr
 	d.mu.Unlock()
+
+	// Fast cutover when this connection dies later (peer restart, network
+	// change): kill it, mark failed, let streams reconnect via mesh.
+	go d.watchConn(qconn)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -485,6 +598,7 @@ func (d *directClient) startProber(client *client) {
 	if d.retryPeriod <= 0 {
 		d.retryPeriod = directFallbackCooldown
 	}
+	d.owner = client
 	d.probeStop = make(chan struct{})
 	d.probeActive = true
 	stop := d.probeStop
@@ -509,6 +623,7 @@ func (d *directClient) startProber(client *client) {
 		// few seconds even when verified.)
 		var unverifiedC <-chan time.Time = unverifiedTicker.C
 		var verifiedC <-chan time.Time
+		failStreak := 0
 		for {
 			select {
 			case <-stop:
@@ -542,19 +657,26 @@ func (d *directClient) startProber(client *client) {
 			start := time.Now()
 			stream, err := d.openStream()
 			if err != nil {
+				if err == errDirectCooldown {
+					continue // another caller just failed; mesh is serving
+				}
 				if d.connAlive() {
-					// Transient failure on a living connection (packet loss
-					// burst, momentary stream-limit pressure): the path
-					// itself is fine, keep the cache and the connection.
+					// Living connection, transient error (lost probe
+					// packet or a momentary stall). A single failure is
+					// not critical - QUIC retransmits; a streak means
+					// packet loss is growing and the path must yield to
+					// mesh.
+					failStreak++
+					if wasVerified && failStreak >= probeFailStreakLimit {
+						d.dropAndFail(fmt.Sprintf("%d consecutive probe errors: %v", failStreak, err))
+					}
 					continue
 				}
-				// The connection is gone: the path failed, fall back to
-				// mesh and re-verify on the fast cadence.
-				if wasVerified {
-					d.MarkFailed()
-					client.setProbeState(pathMeshFallback)
-					d.log.Warnf("tunnel: h3 path failed (%v) - downgrading to h2, background probing continues", err)
-				}
+				// The connection is gone: fast cutover to mesh (dropAndFail
+				// also kills any streams still riding the dead connection,
+				// so their applications reconnect over mesh right away).
+				d.dropAndFail("")
+				failStreak = 0
 				unverifiedC = unverifiedTicker.C
 				verifiedC = nil
 				continue
@@ -562,11 +684,23 @@ func (d *directClient) startProber(client *client) {
 			// A short multi-stream session: closer to a real browser
 			// connection test than a single bare stream.
 			_ = stream.Close()
-			elapsed := time.Since(start).Truncate(time.Millisecond)
+			elapsed := time.Since(start)
+			failStreak = 0
+			if !d.probeHealthy(elapsed) {
+				// The path answers, but sharply slower than its own
+				// baseline - that is what growing packet loss looks like.
+				// Yield to mesh; the fast cadence keeps checking and the
+				// path is upgraded back as soon as probes come clean.
+				if wasVerified {
+					d.dropAndFail(fmt.Sprintf("probe rtt %s exceeds degradation threshold", elapsed.Truncate(time.Millisecond)))
+				}
+				continue
+			}
 			d.MarkVerified(d.verifyTTL())
 			client.setProbeState(pathH2H3)
 			if !wasVerified {
-				d.log.Infof("tunnel: h3 path verified in %s - new streams upgrade to QUIC", elapsed)
+				d.log.Infof("tunnel: h3 path verified in %s - new streams upgrade to QUIC",
+					elapsed.Truncate(time.Millisecond))
 			}
 			if timerC != nil { // stop the one-shot startup timer
 				timer.Stop()
