@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/tls"
@@ -187,15 +188,57 @@ func (s *server) handleConn(conn *quic.Conn) {
 	}
 }
 
+// probePing is the two-byte signature sent by client probe streams to
+// measure a real end-to-end round trip. User streams always start with the
+// shadowsocks target header from ss-local, which never matches it.
+var probePing = []byte{0x59, 0x21} // "Y!"
+
+// handleProbeStream checks whether the stream is a tunnel liveness probe
+// (probePing as the first bytes) and, if so, echoes the signature back and
+// reports the stream as handled - probes must not reach the shadowsocks
+// server. For user streams it returns the bytes consumed while peeking, so
+// the caller can prepend them to the forwarded data.
+func handleProbeStream(stream *quic.Stream) (handled bool, consumed []byte) {
+	stream.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, len(probePing))
+	n, _ := io.ReadFull(stream, buf)
+	stream.SetReadDeadline(time.Time{})
+	if n == len(probePing) && bytes.Equal(buf, probePing) {
+		_, _ = stream.Write(probePing)
+		return true, nil
+	}
+	return false, buf[:n]
+}
+
+// streamWithPrefix yields the consumed peek bytes before the stream's own
+// data, so a user stream whose first bytes were read during probe detection
+// is forwarded losslessly.
+type streamWithPrefix struct {
+	prefix io.Reader
+	*quic.Stream
+}
+
+func (s streamWithPrefix) Read(p []byte) (int, error)  { return s.prefix.Read(p) }
+func (s streamWithPrefix) Write(p []byte) (int, error) { return s.Stream.Write(p) }
+func (s streamWithPrefix) Close() error                { return s.Stream.Close() }
+
 func (s *server) handleStream(stream *quic.Stream) {
 	defer stream.Close()
+	handled, consumed := handleProbeStream(stream)
+	if handled {
+		return
+	}
 	upstream, err := net.DialTimeout("tcp", s.dst, 10*time.Second)
 	if err != nil {
 		s.log.Warnf("failed to connect to %s: %s", s.dst, err)
 		return
 	}
 	defer upstream.Close()
-	pipe(stream, upstream, &s.rx, &s.tx)
+	var src io.ReadWriteCloser = stream
+	if len(consumed) > 0 {
+		src = streamWithPrefix{io.MultiReader(bytes.NewReader(consumed), stream), stream}
+	}
+	pipe(src, upstream, &s.rx, &s.tx)
 }
 
 func (s *server) tlsConfig() *tls.Config {

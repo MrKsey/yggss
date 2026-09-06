@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"strings"
@@ -129,7 +131,8 @@ func startDirectListener(node *Node, bind string, allowed map[string]struct{},
 }
 
 // serveDirectConn accepts streams on an incoming direct QUIC connection and
-// forwards each stream to dst.
+// forwards each stream to dst. Liveness probes (probePing) are echoed back
+// here and never reach dst.
 func serveDirectConn(qconn *quic.Conn, dst string, logger *log.Logger) {
 	defer qconn.CloseWithError(0, "")
 	for {
@@ -139,13 +142,21 @@ func serveDirectConn(qconn *quic.Conn, dst string, logger *log.Logger) {
 		}
 		go func(stream *quic.Stream) {
 			defer stream.Close()
+			handled, consumed := handleProbeStream(stream)
+			if handled {
+				return
+			}
 			upstream, err := net.DialTimeout("tcp", dst, 10*time.Second)
 			if err != nil {
 				logger.Warnf("direct: failed to connect to %s: %s", dst, err)
 				return
 			}
 			defer upstream.Close()
-			pipe(stream, upstream, nil, nil)
+			var src io.ReadWriteCloser = stream
+			if len(consumed) > 0 {
+				src = streamWithPrefix{io.MultiReader(bytes.NewReader(consumed), stream), stream}
+			}
+			pipe(src, upstream, nil, nil)
 		}(stream)
 	}
 }
@@ -681,9 +692,42 @@ func (d *directClient) startProber(client *client) {
 				verifiedC = nil
 				continue
 			}
-			// A short multi-stream session: closer to a real browser
-			// connection test than a single bare stream.
+			// End-to-end round trip: the path is only verified when data
+			// actually comes back. Stream opens are local operations in
+			// QUIC and succeed even on a black-holed path (NAT rebinding,
+			// firewall starting to drop UDP), so open+close alone would
+			// keep a dead path "verified" forever while user streams
+			// silently hang in it.
+			deadline := time.Now().Add(3 * time.Second)
+			_ = stream.SetDeadline(deadline)
+			if _, werr := stream.Write(probePing); werr == nil {
+				echo := make([]byte, len(probePing))
+				_, rerr := io.ReadFull(stream, echo)
+				if rerr == nil && !bytes.Equal(echo, probePing) {
+					rerr = errors.New("probe echo mismatch")
+				}
+				err = rerr
+			} else {
+				err = werr
+			}
 			_ = stream.Close()
+			if err != nil {
+				// The write/read round trip failed: the path does not
+				// carry data. Treat exactly like a failed open below -
+				// drop the dead connection and yield to mesh.
+				if d.connAlive() {
+					failStreak++
+					if wasVerified && failStreak >= probeFailStreakLimit {
+						d.dropAndFail(fmt.Sprintf("probe round trip failed: %v", err))
+					}
+				} else {
+					d.dropAndFail("")
+					failStreak = 0
+					unverifiedC = unverifiedTicker.C
+					verifiedC = nil
+				}
+				continue
+			}
 			elapsed := time.Since(start)
 			failStreak = 0
 			if !d.probeHealthy(elapsed) {
