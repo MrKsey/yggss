@@ -67,6 +67,14 @@ func quicConfig() *quic.Config {
 //     defaults (512KB/6MB) throttle bulk downloads on paths with RTT
 //     above ~50ms - 16MB over a 100ms RTT path caps at ~130 Mbit/s per
 //     stream, comfortably above typical residential uplink speeds.
+//   - Stream limits 1024 instead of Chrome's ~100/103: a proxy multiplexes
+//     every proxied TCP connection over ONE QUIC connection, and a busy
+//     browser easily exceeds 100 concurrent streams (6+ per host, dozens of
+//     hosts, long-lived keep-alive connections). At Chrome's limit new
+//     stream opens stall until a slot frees - visible as periodic tunnel
+//     freezes. Like the flow-control windows, stream limits are transport
+//     parameters, not frames, and browsers vary them across platforms; the
+//     strong browser signals (ALPN h3, SNI, initial packet size) are kept.
 //
 // Parameters quic-go cannot customize (versions, grease) are already close
 // to Chrome by default.
@@ -76,8 +84,8 @@ func chromeTransportParams() *quic.Config {
 		MaxIdleTimeout:       2 * time.Minute,
 		KeepAlivePeriod:      10 * time.Second,
 
-		MaxIncomingStreams:    100,
-		MaxIncomingUniStreams: 103,
+		MaxIncomingStreams:    1024,
+		MaxIncomingUniStreams: 1024,
 		InitialPacketSize:     1350,
 
 		InitialStreamReceiveWindow:     4 << 20,  // 4MB instead of the 512KB default
@@ -321,16 +329,34 @@ func (c *client) openStream() (*quic.Stream, error) {
 		if err == nil {
 			return stream, nil
 		}
-		// The verified path broke between probes: downgrade immediately,
-		// the prober will re-verify in the background.
-		c.direct.MarkFailed()
-		c.setProbeState(pathMeshFallback)
-		c.log.Warnf("tunnel: h3 path failed (%v) - stream downgraded to h2", err)
+		// Downgrade everyone to mesh only when the direct connection is
+		// really gone. A transient error on a living connection (e.g. the
+		// peer stream limit reached for a moment) must not tear down the
+		// verified cache - this stream is simply served over mesh.
+		if !c.direct.connAlive() {
+			c.direct.MarkFailed()
+			c.setProbeState(pathMeshFallback)
+			c.log.Warnf("tunnel: h3 path failed (%v) - downgrading to h2", err)
+		} else {
+			c.log.Warnf("tunnel: h3 stream failed (%v) - serving this stream over h2", err)
+		}
 	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if c.qconn != nil {
+		// A mesh connection killed by the peer or by a link flap may still
+		// accept local stream opens for a while - detect it up front,
+		// otherwise every new stream blocks for the full OpenStreamSync
+		// timeout while serializing all other callers on the lock.
+		select {
+		case <-c.qconn.Context().Done():
+			_ = c.qconn.CloseWithError(0, "reset")
+			c.qconn = nil
+		default:
+		}
+	}
 	if c.qconn != nil {
 		stream, err := c.openStreamOn(c.qconn)
 		if err == nil {

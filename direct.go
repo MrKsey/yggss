@@ -192,18 +192,31 @@ const directDialTimeout = 5 * time.Second
 // the handshake looks like a browser HTTP/3 connection. Returns the
 // established QUIC connection. The dial timeout is capped at
 // directDialTimeout unless configured shorter.
+//
+// Convenience wrapper for tests and diagnostics: the underlying transport is
+// not returned, so this leaks one UDP socket per call. Production code must
+// use directDialTransport.
 func directDial(node *Node, serverKey ed25519.PublicKey, serverAddr string,
 	timeout time.Duration, fakeSNI string) (*quic.Conn, error) {
+	qconn, _, err := directDialTransport(node, serverKey, serverAddr, timeout, fakeSNI)
+	return qconn, err
+}
+
+// directDialTransport is directDial plus the owning transport: the caller
+// must keep the transport alive while the connection is used and Close it
+// afterwards, otherwise every dial leaks a UDP socket and its goroutines.
+func directDialTransport(node *Node, serverKey ed25519.PublicKey, serverAddr string,
+	timeout time.Duration, fakeSNI string) (*quic.Conn, *quic.Transport, error) {
 	if timeout <= 0 || timeout > directDialTimeout {
 		timeout = directDialTimeout
 	}
 	host, port, err := parseHostPort(serverAddr)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	raddr, err := resolveUDP(host, port)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	// The local socket must match the address family of the server:
 	// sending IPv4 packets from an IPv6-bound socket fails on Windows.
@@ -215,7 +228,7 @@ func directDial(node *Node, serverKey ed25519.PublicKey, serverAddr string,
 	}
 	udpConn, err := net.ListenUDP("udp", laddr)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	tr := &quic.Transport{Conn: udpConn}
 	tlsCfg := &tls.Config{
@@ -249,9 +262,9 @@ func directDial(node *Node, serverKey ed25519.PublicKey, serverAddr string,
 	qconn, err := tr.Dial(ctx, raddr, tlsCfg, chromeTransportParams())
 	if err != nil {
 		_ = tr.Close()
-		return nil, fmt.Errorf("direct dial failed: %w", err)
+		return nil, nil, fmt.Errorf("direct dial failed: %w", err)
 	}
-	return qconn, nil
+	return qconn, tr, nil
 }
 
 // directClient wraps a direct QUIC connection for the client side: it hands
@@ -272,7 +285,7 @@ type directClient struct {
 	log         *log.Logger
 
 	mu    sync.Mutex
-	tr    *quic.Transport
+	tr    *quic.Transport // transport owning qconn; closed together with it
 	qconn *quic.Conn
 
 	verifyMu      sync.Mutex
@@ -355,51 +368,85 @@ func (c *client) PathState() directPathState {
 	return c.probeState
 }
 
+// connAlive reports whether the current direct connection exists and has
+// not been closed (by us, by the peer, or by an idle timeout).
+func (d *directClient) connAlive() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.connAliveLocked()
+}
+
+// connAliveLocked is connAlive without locking (d.mu must be held).
+func (d *directClient) connAliveLocked() bool {
+	if d.qconn == nil {
+		return false
+	}
+	select {
+	case <-d.qconn.Context().Done():
+		return false
+	default:
+		return true
+	}
+}
+
+// dropConnLocked closes and forgets the current connection together with
+// its transport (d.mu must be held). Only call this for dead connections:
+// closing kills every stream running on the connection.
+func (d *directClient) dropConnLocked() {
+	if d.qconn != nil {
+		_ = d.qconn.CloseWithError(0, "reset")
+	}
+	if d.tr != nil {
+		_ = d.tr.Close()
+	}
+	d.qconn = nil
+	d.tr = nil
+}
+
 // openStream returns a QUIC stream to the server, reusing the existing
 // connection when possible and redialing otherwise. Dials are serialised:
 // a caller that finds a dead connection dials under the lock, so only one
 // redial happens at a time and nobody closes a connection with live
 // streams. The lock is held only for the dial, not for stream opens on a
 // healthy connection - concurrent streams on a working path never queue.
+//
+// Error handling distinguishes a dead connection from a transient failure:
+// a dead connection is dropped and redialed, while a transient error (a
+// burst of packet loss, the peer stream limit reached for a moment) is
+// reported as-is. Killing the connection on a transient error would take
+// down every healthy stream multiplexed on it.
 func (d *directClient) openStream() (*quic.Stream, error) {
 	d.mu.Lock()
-	qconn := d.qconn
-	if qconn != nil {
-		// A connection killed by the peer (idle timeout, network change)
-		// may still accept local stream opens for a while - check that it
-		// is actually alive before handing out a stream into a black hole.
-		select {
-		case <-qconn.Context().Done():
-			// Half-dead: drop it and redial - still under the lock.
-			_ = qconn.CloseWithError(0, "reset")
-			d.qconn = nil
-			qconn = nil
-		default:
+	if !d.connAliveLocked() {
+		d.dropConnLocked()
+	} else {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		stream, err := d.qconn.OpenStreamSync(ctx)
+		cancel()
+		if err == nil {
+			d.mu.Unlock()
+			return stream, nil
 		}
-		if qconn != nil {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			stream, err := qconn.OpenStreamSync(ctx)
-			cancel()
-			if err == nil {
-				d.mu.Unlock()
-				return stream, nil
-			}
-			// Connection is dead: drop it and redial - still under the
-			// lock, so the prober and user streams do not race each other.
-			_ = qconn.CloseWithError(0, "reset")
-			d.qconn = nil
+		if d.connAliveLocked() {
+			// Transient failure on a living connection: report it, keep
+			// the connection and its healthy streams untouched.
+			d.mu.Unlock()
+			return nil, err
 		}
+		// The connection died while we were waiting: drop and redial.
+		d.dropConnLocked()
 	}
 
 	// Redial under the lock. directDial is capped at directDialTimeout,
 	// so worst case concurrent callers wait that long for a healthy new
 	// connection instead of racing and killing each other's streams.
-	qconn, err := directDial(d.node, d.serverKey, d.serverAddr, d.timeout, d.fakeSNI)
+	qconn, tr, err := directDialTransport(d.node, d.serverKey, d.serverAddr, d.timeout, d.fakeSNI)
 	if err != nil {
 		d.mu.Unlock()
 		return nil, err
 	}
 	d.qconn = qconn
+	d.tr = tr
 	d.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -411,14 +458,7 @@ func (d *directClient) openStream() (*quic.Stream, error) {
 func (d *directClient) Close() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.qconn != nil {
-		_ = d.qconn.CloseWithError(0, "")
-		d.qconn = nil
-	}
-	if d.tr != nil {
-		_ = d.tr.Close()
-		d.tr = nil
-	}
+	d.dropConnLocked()
 	d.stopProber()
 	return nil
 }
@@ -463,15 +503,20 @@ func (d *directClient) startProber(client *client) {
 		defer unverifiedTicker.Stop()
 		verifiedTicker := time.NewTicker(d.retryPeriod)
 		defer verifiedTicker.Stop()
-		verifiedTicker.Stop() // only started when verified
+		// Exactly one cadence is enabled at a time: fast re-probing while
+		// the path is unverified, slow re-confirmation while it is verified.
+		// (Both tickers used to fire unconditionally, probing the path every
+		// few seconds even when verified.)
+		var unverifiedC <-chan time.Time = unverifiedTicker.C
+		var verifiedC <-chan time.Time
 		for {
 			select {
 			case <-stop:
 				return
 			case <-timerC:
 				timerC = nil
-			case <-unverifiedTicker.C:
-			case <-verifiedTicker.C:
+			case <-unverifiedC:
+			case <-verifiedC:
 			}
 			// The probe runs only on top of an active mesh session: the
 			// TLS link (h2 phase) must be alive for the h3 check to look
@@ -488,6 +533,8 @@ func (d *directClient) startProber(client *client) {
 					d.MarkFailed()
 					client.setProbeState(pathMeshProbing)
 					d.log.Infoln("tunnel: idle, h3 cache dropped - will re-verify on next activity")
+					unverifiedC = unverifiedTicker.C
+					verifiedC = nil
 				}
 				continue
 			}
@@ -495,11 +542,21 @@ func (d *directClient) startProber(client *client) {
 			start := time.Now()
 			stream, err := d.openStream()
 			if err != nil {
+				if d.connAlive() {
+					// Transient failure on a living connection (packet loss
+					// burst, momentary stream-limit pressure): the path
+					// itself is fine, keep the cache and the connection.
+					continue
+				}
+				// The connection is gone: the path failed, fall back to
+				// mesh and re-verify on the fast cadence.
 				if wasVerified {
 					d.MarkFailed()
 					client.setProbeState(pathMeshFallback)
 					d.log.Warnf("tunnel: h3 path failed (%v) - downgrading to h2, background probing continues", err)
 				}
+				unverifiedC = unverifiedTicker.C
+				verifiedC = nil
 				continue
 			}
 			// A short multi-stream session: closer to a real browser
@@ -515,7 +572,10 @@ func (d *directClient) startProber(client *client) {
 				timer.Stop()
 				timerC = nil
 			}
+			// Verified: probe on the slow cadence only.
+			unverifiedC = nil
 			verifiedTicker.Reset(d.retryPeriod)
+			verifiedC = verifiedTicker.C
 		}
 	}()
 }
