@@ -218,7 +218,7 @@ func TestEndToEndDirect(t *testing.T) {
 		direct: &directClient{
 			node:        cliNode,
 			serverKey:   srvNode.PublicKey(),
-			serverAddr:  net.JoinHostPort("127.0.0.1", srvPort),
+			serverAddr:  net.JoinHostPort(udpTestHost, srvPort),
 			timeout:     15 * time.Second,
 			retryPeriod: 2 * time.Second,
 			log:         logger,
@@ -283,14 +283,14 @@ func TestDirectDialDiagnostic(t *testing.T) {
 	}
 	defer srvNode.Stop()
 
-	ql, addr, err := startDirectListener(srvNode, "127.0.0.1:0", nil, logger)
+	ql, addr, err := startDirectListener(srvNode, net.JoinHostPort(udpTestHost, "0"), nil, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer ql.Close()
 	_ = ql
 
-	qconn, err := directDial(srvNode, srvNode.PublicKey(), net.JoinHostPort("127.0.0.1", strconv.Itoa(addr.Port)), 10*time.Second, "")
+	qconn, err := directDial(srvNode, srvNode.PublicKey(), net.JoinHostPort(udpTestHost, strconv.Itoa(addr.Port)), 10*time.Second, "")
 	if err != nil {
 		t.Fatalf("direct dial failed: %v", err)
 	}

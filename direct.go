@@ -680,6 +680,11 @@ func (d *directClient) startProber(client *client) {
 				continue
 			}
 			wasVerified := d.IsVerified()
+			// Sync a stale display state: the verified cache may have
+			// expired between probes while the path is actually dead.
+			if !wasVerified && client.PathState() == pathH2H3 {
+				client.setProbeState(pathMeshProbing)
+			}
 			start := time.Now()
 			stream, err := d.openStream()
 			if err != nil {
@@ -730,9 +735,15 @@ func (d *directClient) startProber(client *client) {
 				// The write/read round trip failed: the path does not
 				// carry data. Treat exactly like a failed open below -
 				// drop the dead connection and yield to mesh.
+				//
+				// The streak limit is checked regardless of wasVerified:
+				// the verified cache may expire (its TTL is short) before
+				// two 3s-timeout probes complete, and dropping a dead
+				// connection is correct in the unverified probing phase
+				// too - the next dial starts fresh.
 				if d.connAlive() {
 					failStreak++
-					if wasVerified && failStreak >= probeFailStreakLimit {
+					if failStreak >= probeFailStreakLimit {
 						d.dropAndFail(fmt.Sprintf("probe round trip failed: %v", err))
 					}
 				} else {

@@ -62,7 +62,7 @@ func TestQuicLoopbackRaw(t *testing.T) {
 	ctr := &quic.Transport{Conn: cconn}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	qc, err := ctr.Dial(ctx, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: sconn.LocalAddr().(*net.UDPAddr).Port}, clientTLS, &quic.Config{})
+	qc, err := ctr.Dial(ctx, &net.UDPAddr{IP: net.ParseIP(udpTestHost), Port: sconn.LocalAddr().(*net.UDPAddr).Port}, clientTLS, &quic.Config{})
 	if err != nil {
 		t.Fatalf("raw quic dial failed: %v", err)
 	}
@@ -83,34 +83,74 @@ func TestQuicLoopbackRaw(t *testing.T) {
 	}
 }
 
-// udpLoopbackAvailable probes whether UDP datagrams can travel over
-// loopback in this environment (sandboxes and some CI runners block UDP).
-func udpLoopbackAvailable(t *testing.T) {
-	t.Helper()
-	rx, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+// udpTestHost is the IP string over which UDP datagrams actually travel in
+// this environment. Loopback is preferred; some firewalls filter loopback
+// UDP while allowing it on real interfaces, so a private LAN address is the
+// fallback. Empty means UDP is unusable and direct-mode tests must skip.
+var udpTestHost = detectUDPHost()
+
+func detectUDPHost() string {
+	for _, host := range []string{"127.0.0.1", firstLANIPv4()} {
+		if host == "" {
+			continue
+		}
+		if udpEchoWorks(host) {
+			return host
+		}
+	}
+	return ""
+}
+
+func firstLANIPv4() string {
+	addrs, err := net.InterfaceAddrs()
 	if err != nil {
-		t.Skipf("cannot open UDP socket: %v", err)
+		return ""
+	}
+	for _, a := range addrs {
+		if ipnet, ok := a.(*net.IPNet); ok {
+			ip := ipnet.IP.To4()
+			if ip != nil && !ip.IsLoopback() && ip.IsPrivate() {
+				return ip.String()
+			}
+		}
+	}
+	return ""
+}
+
+func udpEchoWorks(host string) bool {
+	rx, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP(host), Port: 0})
+	if err != nil {
+		return false
 	}
 	defer rx.Close()
-	tx, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	tx, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP(host), Port: 0})
 	if err != nil {
-		t.Skipf("cannot open UDP socket: %v", err)
+		return false
 	}
 	defer tx.Close()
 	if _, err := tx.WriteToUDP([]byte("x"), rx.LocalAddr().(*net.UDPAddr)); err != nil {
-		t.Skipf("cannot send UDP: %v", err)
+		return false
 	}
-	_ = rx.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_ = rx.SetReadDeadline(time.Now().Add(time.Second))
 	buf := make([]byte, 1)
-	if _, err := rx.Read(buf); err != nil {
-		t.Skip("UDP loopback is blocked in this environment; direct-mode tests require a real network")
+	_, err = rx.Read(buf)
+	return err == nil
+}
+
+// udpLoopbackAvailable skips direct-mode tests when no UDP path works in
+// this environment (sandboxes, some CI runners and firewalls block it).
+func udpLoopbackAvailable(t *testing.T) {
+	t.Helper()
+	if udpTestHost == "" {
+		t.Skip("no working UDP path in this environment (loopback and LAN both filtered); direct-mode tests require a real network")
 	}
 }
 
-// TestUDPLoopbackEcho checks plain UDP loopback in this environment.
+// TestUDPLoopbackEcho checks plain UDP in this environment.
 func TestUDPLoopbackEcho(t *testing.T) {
 	udpLoopbackAvailable(t)
-	sconn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	host := net.ParseIP(udpTestHost)
+	sconn, err := net.ListenUDP("udp", &net.UDPAddr{IP: host, Port: 0})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,18 +164,18 @@ func TestUDPLoopbackEcho(t *testing.T) {
 		sconn.WriteToUDP(buf[:n], raddr)
 	}()
 
-	cconn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	cconn, err := net.ListenUDP("udp", &net.UDPAddr{IP: host, Port: 0})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer cconn.Close()
-	if _, err := cconn.WriteToUDP([]byte("ping!"), &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: sconn.LocalAddr().(*net.UDPAddr).Port}); err != nil {
+	if _, err := cconn.WriteToUDP([]byte("ping!"), &net.UDPAddr{IP: host, Port: sconn.LocalAddr().(*net.UDPAddr).Port}); err != nil {
 		t.Fatal(err)
 	}
 	_ = cconn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	buf := make([]byte, 5)
 	if _, err := cconn.Read(buf); err != nil {
-		t.Fatalf("udp loopback echo failed: %v", err)
+		t.Fatalf("udp echo failed: %v", err)
 	}
 }
 

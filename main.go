@@ -273,6 +273,14 @@ func main() {
 		logger.Infoln("note: bind/destination from the JSON config are ignored when running under shadowsocks")
 	}
 
+	// Startup summary: the four parameters that define where the plugin
+	// listens, where it forwards, which link scheme it uses and which
+	// tunnel transport carries the traffic.
+	logger.Infof("bind: %s", bindAddr)
+	logger.Infof("destination: %s", dstAddr)
+	logger.Infof("scheme: %s", scheme)
+	logger.Infof("mode: %s", mode)
+
 	if bindAddr == "" {
 		fatal(logger, "listen address (-b) is required")
 	}

@@ -122,6 +122,12 @@ const pipeBufSize = 256 * 1024
 // pipe copies data between two endpoints in both directions until one of
 // them reaches EOF or fails, then closes both. Traffic is counted when a
 // non-nil counter is supplied.
+//
+// As soon as ONE direction finishes (EOF or error), both endpoints are
+// closed: waiting for the second direction would keep the user connection
+// open after the tunnel side is gone - e.g. a stream killed with its QUIC
+// connection would leave the application's TCP connection hanging until
+// the application's own timeout instead of failing immediately.
 func pipe(a, b io.ReadWriteCloser, rx, tx *tunnelCounters) {
 	done := make(chan struct{}, 2)
 	copyCount := func(dst io.Writer, src io.Reader, cnt *tunnelCounters) {
@@ -145,6 +151,8 @@ func pipe(a, b io.ReadWriteCloser, rx, tx *tunnelCounters) {
 	go copyCount(a, b, rx)
 	go copyCount(b, a, tx)
 	<-done
+	_ = a.Close()
+	_ = b.Close()
 	<-done
 }
 
@@ -330,6 +338,10 @@ func (c *client) Run() (net.Listener, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to listen on %s: %w", c.bind, err)
 	}
+	// The tunnel starts active so the startup probe runs as designed (the
+	// "Alt-Svc hint" fires ~2s after start even before the first user
+	// stream arrives).
+	c.touchActivity()
 	c.log.Infoln("listening on", c.bind)
 	go c.acceptLoop(ln)
 	return ln, nil
@@ -388,6 +400,14 @@ func (c *client) openStream() (*quic.Stream, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// A cached mesh connection whose yggdrasil peering is gone is a black
+	// hole: QUIC keeps it "open" locally (stream opens succeed, writes
+	// buffer) until the idle timeout, so user streams would hang for up to
+	// two minutes. When no peering is up, drop it and fail fast.
+	if c.qconn != nil && c.node != nil && !c.meshActive() {
+		_ = c.qconn.CloseWithError(0, "reset")
+		c.qconn = nil
+	}
 	if c.qconn != nil {
 		// A mesh connection killed by the peer or by a link flap may still
 		// accept local stream opens for a while - detect it up front,
@@ -423,6 +443,11 @@ func (c *client) openStream() (*quic.Stream, error) {
 		// Test-only configuration without a mesh transport: fail fast so
 		// callers fall through to error handling instead of hanging.
 		return nil, errors.New("mesh: no transport configured (test)")
+	}
+	if !c.meshActive() {
+		// No yggdrasil peering: a dial cannot possibly succeed right now,
+		// and waiting for the full dial timeout would just stall streams.
+		return nil, errors.New("mesh: no yggdrasil peering is up")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), dialTimeout)
 	defer cancel()
