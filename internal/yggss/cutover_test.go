@@ -1,4 +1,4 @@
-package main
+package yggss
 
 // Live cutover fault-injection test: a controllable UDP proxy sits between
 // the direct client and the direct server, so the UDP path can be broken

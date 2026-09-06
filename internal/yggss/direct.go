@@ -1,4 +1,4 @@
-package main
+package yggss
 
 import (
 	"bytes"

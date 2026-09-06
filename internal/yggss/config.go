@@ -1,4 +1,4 @@
-package main
+package yggss
 
 import (
 	"encoding/json"
@@ -11,6 +11,8 @@ import (
 // It is loaded with the -c flag (or the "config" SIP003 option) and provides
 // defaults for the corresponding command-line flags. Explicit flags and
 // SIP003 environment variables take precedence over the config file.
+//
+// Exported as Config through the package API (see api.go).
 type pluginConfig struct {
 	// Server selects the server role (same as the -s flag).
 	Server bool `json:"server"`

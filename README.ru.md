@@ -229,7 +229,7 @@ yggdrasil address:  200:7235:ff73:d8a4:a4af:224a:7649:c0d4
 
 ### 3. Примеры конфигурации
 
-Клиентский плагин (`examples/yggss-client.json`):
+Клиентский плагин (`examples/client/yggss.json`):
 
 ```json
 {
@@ -251,7 +251,7 @@ yggdrasil address:  200:7235:ff73:d8a4:a4af:224a:7649:c0d4
 }
 ```
 
-Серверный плагин (`examples/yggss-server.json`):
+Серверный плагин (`examples/server/yggss.json`):
 
 ```json
 {
@@ -302,9 +302,9 @@ yggdrasil address:  200:7235:ff73:d8a4:a4af:224a:7649:c0d4
 - **Из исходников** (Go 1.25+):
 
   ```bash
-  GOOS=linux   GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o yggss-linux-amd64 .
-  GOOS=linux   GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o yggss-linux-arm64 .
-  GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o yggss.exe .
+  GOOS=linux   GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o yggss-linux-amd64 ./cmd/yggss
+  GOOS=linux   GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o yggss-linux-arm64 ./cmd/yggss
+  GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o yggss.exe ./cmd/yggss
   ```
 
 Один бинарник работает и как клиент, и как сервер; роль задаётся полем
@@ -318,6 +318,17 @@ yggdrasil address:  200:7235:ff73:d8a4:a4af:224a:7649:c0d4
 каждый публичный пирринг — потенциальный транзитный путь (см. *Почему
 скорость через mesh может быть низкой*). С настроенным group password
 чужие узлы не смогут пирриться с вашими листенерами, даже если обнаружат их.
+
+## Структура репозитория
+
+```
+cmd/yggss/          точка входа: флаги, чтение конфига, сборка компонентов
+internal/yggss/     вся логика плагина: yggdrasil-узел, туннель, direct-путь,
+                    failover, статус-лог, конфиг, SIP003
+examples/client/    клиент: конфиг плагина, конфиг ss-local, systemd-юнит
+examples/server/    сервер: конфиг плагина, конфиг ss-server, systemd-юнит
+.github/workflows/  сборка релизных бинарников (прикрепляются к релизам)
+```
 
 ## Ограничения
 

@@ -1,4 +1,4 @@
-package main
+package yggss
 
 import (
 	"os"
@@ -69,7 +69,7 @@ func TestLoadConfigFileInvalid(t *testing.T) {
 
 // TestExampleConfigs validates all bundled example plugin configs parse cleanly.
 func TestExampleConfigs(t *testing.T) {
-	matches, err := filepath.Glob("examples/yggss-*.json")
+	matches, err := filepath.Glob("../../examples/*/yggss*.json")
 	if err != nil {
 		t.Fatal(err)
 	}

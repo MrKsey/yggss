@@ -1,4 +1,4 @@
-package main
+package yggss
 
 import (
 	"net"
@@ -6,18 +6,19 @@ import (
 	"strings"
 )
 
-// sip003Env holds the environment variables set by a shadowsocks client or
+// Env holds the environment variables set by a shadowsocks client or
 // server when launching this program as a SIP003 plugin.
-type sip003Env struct {
+type Env struct {
 	localHost  string
 	localPort  string
 	remoteHost string
 	remotePort string
-	options    map[string]string
+	// Options is the parsed SS_PLUGIN_OPTIONS string (key=value pairs).
+	Options map[string]string
 }
 
-func (e *sip003Env) localAddr() string  { return net.JoinHostPort(e.localHost, e.localPort) }
-func (e *sip003Env) remoteAddr() string { return net.JoinHostPort(e.remoteHost, e.remotePort) }
+func (e *Env) LocalAddr() string  { return net.JoinHostPort(e.localHost, e.localPort) }
+func (e *Env) RemoteAddr() string { return net.JoinHostPort(e.remoteHost, e.remotePort) }
 
 // detectSIP003 returns the plugin environment if the process was launched by
 // a shadowsocks server or client, nil otherwise.
@@ -25,7 +26,7 @@ func (e *sip003Env) remoteAddr() string { return net.JoinHostPort(e.remoteHost, 
 // Note: the presence of SS_PLUGIN is NOT a reliable signal — the SIP003 spec
 // does not define it and shadowsocks-rust never sets it. The standard way
 // (used by simple-tls as well) is to look for SS_LOCAL_*/SS_REMOTE_* variables.
-func detectSIP003() *sip003Env {
+func detectSIP003() *Env {
 	_, localHost := os.LookupEnv("SS_LOCAL_HOST")
 	_, localPort := os.LookupEnv("SS_LOCAL_PORT")
 	_, remoteHost := os.LookupEnv("SS_REMOTE_HOST")
@@ -37,12 +38,12 @@ func detectSIP003() *sip003Env {
 	if !localHost || !localPort || !remoteHost || !remotePort {
 		return nil // incomplete SIP003 environment, treat as standalone run
 	}
-	return &sip003Env{
+	return &Env{
 		localHost:  os.Getenv("SS_LOCAL_HOST"),
 		localPort:  os.Getenv("SS_LOCAL_PORT"),
 		remoteHost: os.Getenv("SS_REMOTE_HOST"),
 		remotePort: os.Getenv("SS_REMOTE_PORT"),
-		options:    parsePluginOptions(os.Getenv("SS_PLUGIN_OPTIONS")),
+		Options:    parsePluginOptions(os.Getenv("SS_PLUGIN_OPTIONS")),
 	}
 }
 

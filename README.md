@@ -224,7 +224,7 @@ tuning. Pass just the config path:
 
 ### 3. Config examples
 
-Client plugin (`examples/yggss-client.json`):
+Client plugin (`examples/client/yggss.json`):
 
 ```json
 {
@@ -246,7 +246,7 @@ Client plugin (`examples/yggss-client.json`):
 }
 ```
 
-Server plugin (`examples/yggss-server.json`):
+Server plugin (`examples/server/yggss.json`):
 
 ```json
 {
@@ -297,9 +297,9 @@ The same options are available as CLI flags (`-s`, `-key`, `-serverkey`,
 - **From source** (Go 1.25+):
 
   ```bash
-  GOOS=linux   GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o yggss-linux-amd64 .
-  GOOS=linux   GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o yggss-linux-arm64 .
-  GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o yggss.exe .
+  GOOS=linux   GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o yggss-linux-amd64 ./cmd/yggss
+  GOOS=linux   GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o yggss-linux-arm64 ./cmd/yggss
+  GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o yggss.exe ./cmd/yggss
   ```
 
 One binary serves as both client and server; the role is set by the
@@ -313,6 +313,17 @@ geographically close to you and put them into `peers`. Avoid adding many:
 every public peering is a potential transit path (see *Why mesh speed can be
 low*). With a group password configured, foreign nodes cannot peer with your
 listeners even if they discover them.
+
+## Repository structure
+
+```
+cmd/yggss/          command entry point: flags, config loading, wiring
+internal/yggss/     all plugin logic: yggdrasil node, tunnel, direct path,
+                    failover, status log, config, SIP003
+examples/client/    client: plugin config, ss-local config, systemd unit
+examples/server/    server: plugin config, ss-server config, systemd unit
+.github/workflows/  release builds (binaries are attached to GitHub releases)
+```
 
 ## Limitations
 

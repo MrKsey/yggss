@@ -22,6 +22,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"yggss/internal/yggss"
 
 	"github.com/gologme/log"
 	"github.com/yggdrasil-network/yggdrasil-go/src/address"
@@ -76,8 +77,8 @@ func main() {
 	fs.StringVar(&configPath, "c", "", "path to a JSON config file (see examples/)")
 	fs.IntVar(&logIntervalSec, "loginterval", 30, "status log interval in seconds (0 = disabled)")
 	fs.BoolVar(&failoverFlag, "failover", true, "direct-link failover (default: on when peers are configured)")
-	fs.IntVar(&failoverLatencyMs, "failoverlatency", defaultFailoverLatencyMs, "direct-link latency threshold in ms for failover")
-	fs.IntVar(&failoverCheckSec, "failovercheck", defaultFailoverCheckSec, "failover health-check interval in seconds")
+	fs.IntVar(&failoverLatencyMs, "failoverlatency", yggss.DefaultFailoverLatencyMs, "direct-link latency threshold in ms for failover")
+	fs.IntVar(&failoverCheckSec, "failovercheck", yggss.DefaultFailoverCheckSec, "failover health-check interval in seconds")
 	fs.BoolVar(&genKey, "genkey", false, "generate a new node key pair and exit")
 	fs.BoolVar(&showVersion, "v", false, "print version and exit")
 	_ = fs.Parse(os.Args[1:])
@@ -117,12 +118,12 @@ func main() {
 		//   "plugin_opts": "/etc/shadowsocks/yggss-client.json"
 		//   "plugin_opts": "c=/etc/shadowsocks/yggss-client.json"
 		//   "plugin_opts": "s;c=/etc/shadowsocks/yggss-server.json"
-		if env := detectSIP003(); env != nil {
-			configPath = configPathFromOptions(os.Getenv("SS_PLUGIN_OPTIONS"))
+		if env := yggss.DetectSIP003(); env != nil {
+			configPath = yggss.ConfigPathFromOptions(os.Getenv("SS_PLUGIN_OPTIONS"))
 		}
 	}
 	if configPath != "" {
-		cfg, err := loadConfigFile(configPath)
+		cfg, err := yggss.LoadConfig(configPath)
 		if err != nil {
 			fatal(logger, "%v", err)
 		}
@@ -190,9 +191,9 @@ func main() {
 	}
 
 	// Overwrite flags when running as a SIP003 plugin.
-	if env := detectSIP003(); env != nil {
+	if env := yggss.DetectSIP003(); env != nil {
 		logger.Infoln("running as a SIP003 plugin")
-		get := func(k string) string { return env.options[k] }
+		get := func(k string) string { return env.Options[k] }
 		if v := get("key"); v != "" {
 			keyHex = v
 		}
@@ -251,18 +252,18 @@ func main() {
 				failoverCheckSec = n
 			}
 		}
-		if _, ok := env.options["s"]; ok {
+		if _, ok := env.Options["s"]; ok {
 			isServer = true
 		}
 		if isServer {
 			// The plugin must listen on the public endpoint and forward
 			// decrypted streams to the shadowsocks server.
-			bindAddr = env.remoteAddr()
-			dstAddr = env.localAddr()
+			bindAddr = env.RemoteAddr()
+			dstAddr = env.LocalAddr()
 		} else {
 			// The plugin listens for ss-local and tunnels to the server.
-			bindAddr = env.localAddr()
-			dstAddr = env.remoteAddr()
+			bindAddr = env.LocalAddr()
+			dstAddr = env.RemoteAddr()
 		}
 		logger.Infof("SIP003 addresses: bind=%s (from SS_LOCAL_%s), destination=%s (from SS_%s)",
 			bindAddr,
@@ -287,7 +288,7 @@ func main() {
 	timeout := time.Duration(timeoutSec) * time.Second
 
 	// Create the local yggdrasil node (no TUN adapter, library mode only).
-	node, err := NewNode(keyHex, password, logger)
+	node, err := yggss.NewNode(keyHex, password, logger)
 	if err != nil {
 		fatal(logger, "%v", err)
 	}
@@ -334,20 +335,20 @@ func main() {
 			}
 			logger.Infof("client whitelist: %d key(s)", len(allowed))
 		}
-		srv := &server{
-			node:    node,
-			dst:     dstAddr,
-			allowed: allowed,
-			log:     logger,
-		}
 		// Direct mode: additionally serve the tunnel over plain UDP on the
 		// same port. The mesh tunnel keeps working as a fallback.
 		if mode == "direct" {
-			if err := startDirectServer(node, bindAddr, dstAddr, allowed, logger); err != nil {
+			if err := yggss.StartDirectServer(node, bindAddr, dstAddr, allowed, logger); err != nil {
 				fatal(logger, "direct mode: %v", err)
 			}
 		}
-		startStatusLogger(node, nil, time.Duration(logIntervalSec)*time.Second, logger)
+		yggss.StartStatusLogger(node, nil, time.Duration(logIntervalSec)*time.Second, logger)
+		srv := yggss.NewServer(yggss.ServerOptions{
+			Node:    node,
+			Dst:     dstAddr,
+			Allowed: allowed,
+			Log:     logger,
+		})
 		if err := srv.Run(); err != nil {
 			fatal(logger, "server exited: %v", err)
 		}
@@ -381,38 +382,40 @@ func main() {
 		logger.Infoln("peering with", peerURI)
 	}
 
-	cl := &client{
-		node:      node,
-		serverKey: ed25519.PublicKey(serverKey),
-		bind:      bindAddr,
-		timeout:   timeout,
-		log:       logger,
-	}
+	var cl *yggss.Client
+	var dc *yggss.DirectClient
 	if mode == "direct" {
 		dialTimeout := time.Duration(directDialSec) * time.Second
 		retryPeriod := time.Duration(directRetrySec) * time.Second
-		cl.direct = &directClient{
-			node:        node,
-			serverKey:   ed25519.PublicKey(serverKey),
-			serverAddr:  dstAddr,
-			timeout:     dialTimeout,
-			retryPeriod: retryPeriod,
-			fakeSNI:     sni,
-			log:         logger,
-		}
-		cl.direct.startProber(cl)
+		dc = yggss.NewDirectClient(yggss.DirectOptions{
+			Node:        node,
+			ServerKey:   ed25519.PublicKey(serverKey),
+			ServerAddr:  dstAddr,
+			Timeout:     dialTimeout,
+			RetryPeriod: retryPeriod,
+			FakeSNI:     sni,
+			Log:         logger,
+		})
 		logger.Infof("tunnel mode: direct (QUIC over UDP to %s), mesh fallback enabled, dial timeout %s, retry every %s",
 			dstAddr, dialTimeout, retryPeriod)
 	} else {
 		logger.Infoln("tunnel mode: mesh (via yggdrasil session)")
 	}
+	cl = yggss.NewClient(yggss.ClientOptions{
+		Node:      node,
+		ServerKey: ed25519.PublicKey(serverKey),
+		Bind:      bindAddr,
+		Timeout:   timeout,
+		Log:       logger,
+		Direct:    dc,
+	})
 
 	// Direct-link failover: prefer the direct peering; when it degrades,
 	// disconnect it so traffic goes through the mesh peers, and restore it
 	// once the endpoint becomes reachable again.
 	if failoverSet || len(splitPeers(peerList)) > 0 {
 		if !failoverSet || failoverFlag {
-			if fm := newFailoverMonitor(node, peerURI, ed25519.PublicKey(serverKey),
+			if fm := yggss.NewFailoverMonitor(node, peerURI, ed25519.PublicKey(serverKey),
 				failoverLatencyMs, failoverCheckSec, logger); fm != nil {
 				go fm.Run()
 			}
@@ -445,8 +448,8 @@ func main() {
 			serverKeyHex, timeout, dstAddr)
 	}()
 
-	startStatusLoggerTun(node, ed25519.PublicKey(serverKey), time.Duration(logIntervalSec)*time.Second,
-		&cl.rx, &cl.tx, func() string { return cl.PathState().String() }, logger)
+	yggss.StartClientStatusLog(node, ed25519.PublicKey(serverKey),
+		time.Duration(logIntervalSec)*time.Second, cl, logger)
 
 	ln, err := cl.Run()
 	if err != nil {

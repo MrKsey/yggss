@@ -1,4 +1,4 @@
-package main
+package yggss
 
 import (
 	"os"
@@ -70,13 +70,13 @@ func TestDetectSIP003(t *testing.T) {
 		if env == nil {
 			t.Fatal("expected plugin mode without SS_PLUGIN set")
 		}
-		if env.localAddr() != "127.0.0.1:4567" {
-			t.Fatalf("localAddr = %q", env.localAddr())
+		if env.LocalAddr() != "127.0.0.1:4567" {
+			t.Fatalf("localAddr = %q", env.LocalAddr())
 		}
-		if env.remoteAddr() != "203.0.113.10:4440" {
-			t.Fatalf("remoteAddr = %q", env.remoteAddr())
+		if env.RemoteAddr() != "203.0.113.10:4440" {
+			t.Fatalf("remoteAddr = %q", env.RemoteAddr())
 		}
-		if got := env.options["c"]; got != "/etc/shadowsocks/yggss-client.json" {
+		if got := env.Options["c"]; got != "/etc/shadowsocks/yggss-client.json" {
 			t.Fatalf("option c = %q", got)
 		}
 	})
