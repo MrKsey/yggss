@@ -87,6 +87,16 @@ func main() {
 	logger.EnableLevel("warn")
 	logger.EnableLevel("error")
 
+	// quic-go warns when it cannot raise the kernel UDP buffer of the
+	// socket it was handed. The mesh tunnel runs QUIC on top of the
+	// yggdrasil virtual PacketConn, which has no kernel socket at all -
+	// the warning is guaranteed noise there, so it is disabled upfront.
+	// The direct tunnel uses a real *net.UDPConn and still gets its 7MB
+	// buffers (verified via ss -lunpm skmem).
+	if os.Getenv("QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING") == "" {
+		os.Setenv("QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING", "1")
+	}
+
 	logger.Infof("yggss %s", version)
 
 	if showVersion {
@@ -405,6 +415,11 @@ func main() {
 	// Verify that the node we peered with is really the server whose key
 	// is configured. A mismatch here (e.g. a yggdrasil address pasted into
 	// server_key instead of the public key) makes QUIC dials time out.
+	//
+	// The warning fires only after the wait window expires and the server
+	// key was never seen among the peers: mesh peers (public relays) have
+	// their own keys and are not expected to match server_key, so warning
+	// about every unrelated peer would be noise.
 	go func() {
 		deadline := time.Now().Add(timeout + 10*time.Second)
 		for time.Now().Before(deadline) {
@@ -414,17 +429,11 @@ func main() {
 					return
 				}
 			}
-			if n := node.ConnectedPeerCount(); n > 0 {
-				for _, k := range node.PeerKeys() {
-					logger.Warnf("peered node key %s does not match server_key %s - "+
-						"QUIC dials will fail; server_key must be the server's public key (hex), not its yggdrasil address",
-						hex.EncodeToString(k), serverKeyHex)
-				}
-				return
-			}
 			time.Sleep(500 * time.Millisecond)
 		}
-		logger.Warnf("no peering verified within %s - check network reachability of %s", timeout, dstAddr)
+		logger.Warnf("server key %s was never seen among the peers within %s - "+
+			"check network reachability of %s and that server_key is the server's public key (hex), not its yggdrasil address",
+			serverKeyHex, timeout, dstAddr)
 	}()
 
 	startStatusLoggerTun(node, ed25519.PublicKey(serverKey), time.Duration(logIntervalSec)*time.Second,
