@@ -1,7 +1,9 @@
-# Build artifacts (download them from Releases instead)
-yggss
-yggss.exe
-yggss-linux-*
-yggss-windows-*
+# Build artifacts (download them from Releases instead).
+# Leading slashes anchor the patterns to the repository root: without them
+# "yggss" also ignores the internal/yggss package directory.
+/yggss
+/yggss.exe
+/yggss-linux-*
+/yggss-windows-*
 *.test
 *.out

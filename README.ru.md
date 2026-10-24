@@ -86,7 +86,7 @@ tunnel path: h2 (h3 failed, probing) - active: mesh
 роль плагина — работающий экземпляр можно опознать по одному логу:
 
 ```
-yggss v1.2.0
+yggss v1.2.2
 bind: [::1]:40729
 destination: [2001:db8::1]:443
 scheme: tls
@@ -299,7 +299,7 @@ yggdrasil address:  200:7235:ff73:d8a4:a4af:224a:7649:c0d4
 - **Релизы**: <https://github.com/MrKsey/yggss/releases> — каждый релиз
   содержит `yggss-linux-amd64`, `yggss-linux-arm64` и
   `yggss-windows-amd64.exe`, собираемые автоматически GitHub Actions.
-- **Из исходников** (Go 1.25+):
+- **Из исходников** (Go 1.26+):
 
   ```bash
   GOOS=linux   GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o yggss-linux-amd64 ./cmd/yggss

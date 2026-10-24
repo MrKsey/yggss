@@ -84,7 +84,7 @@ define the plugin's role, so a running instance can be identified from the
 log alone:
 
 ```
-yggss v1.2.0
+yggss v1.2.2
 bind: [::1]:40729
 destination: [2001:db8::1]:443
 scheme: tls
@@ -294,7 +294,7 @@ The same options are available as CLI flags (`-s`, `-key`, `-serverkey`,
 - **Releases**: <https://github.com/MrKsey/yggss/releases> — every release
   carries `yggss-linux-amd64`, `yggss-linux-arm64` and
   `yggss-windows-amd64.exe`, built automatically by GitHub Actions.
-- **From source** (Go 1.25+):
+- **From source** (Go 1.26+):
 
   ```bash
   GOOS=linux   GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o yggss-linux-amd64 ./cmd/yggss
